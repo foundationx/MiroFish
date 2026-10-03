@@ -211,3 +211,31 @@ def test_normalize_extraction_enforces_ontology():
     assert by_name["Acme"].type == "Entity" and by_name["Acme"].attributes == {}
     assert "Bob" in by_name
     assert ex.facts[0].relation == "RELATED_TO" and ex.facts[0].valid_at is None and ex.facts[0].fact
+
+
+def test_alias_resolution_merges_short_forms(tmp_path):
+    from app.graph_memory.extraction import Extraction, ExtractedEntity, ExtractedFact
+    from app.graph_memory.mempalace_backend import GraphStore
+
+    store = GraphStore(tmp_path, "g_alias", extractor=None)
+    store.create("alias", None)
+    with store.lock:
+        store._apply_extraction(Extraction(entities=[
+            ExtractedEntity(name="Lumora Labs", type="Company", summary="Maker."),
+            ExtractedEntity(name="BrewWithBen", type="Influencer", summary="Reviewer."),
+            ExtractedEntity(name="KettleCo Pro", type="Entity", summary="A kettle."),
+        ], facts=[]), "g_alias__ep__1")
+        ext = Extraction(
+            entities=[
+                ExtractedEntity(name="Lumora", type="Company", summary="Short form."),
+                ExtractedEntity(name="@BrewWithBen", type="Influencer", summary="Handle."),
+                ExtractedEntity(name="KettleCo", type="Competitor", summary="Different org."),
+            ],
+            facts=[ExtractedFact(source="@BrewWithBen", relation="COMMENTS_ON", target="Lumora", fact="Ben comments on Lumora.")],
+        )
+        store._apply_extraction(ext, "g_alias__ep__2")
+    names = sorted(n.name for n in store.list_nodes())
+    assert names == ["BrewWithBen", "KettleCo", "KettleCo Pro", "Lumora Labs"]
+    edges = store.list_edges()
+    assert len(edges) == 1 and edges[0].fact == "Ben comments on Lumora."
+    store.close()

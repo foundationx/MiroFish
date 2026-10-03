@@ -192,9 +192,12 @@ class LLMFactExtractor:
             if self._llm_factory is not None:
                 self._llm = self._llm_factory()
             else:
+                import os
+
                 from ..utils.llm_client import LLMClient
 
-                self._llm = LLMClient()
+                # Optional cheaper/faster model just for extraction (e.g. a non-reasoning Grok).
+                self._llm = LLMClient(model=os.environ.get("MEMPALACE_EXTRACT_MODEL") or None)
         return self._llm
 
     def extract(
@@ -204,6 +207,7 @@ class LLMFactExtractor:
         *,
         reference_time: Optional[str] = None,
         context: str = "",
+        known_entities: Optional[List[str]] = None,
     ) -> Extraction:
         text = (text or "").strip()
         if not text:
@@ -211,6 +215,11 @@ class LLMFactExtractor:
         user = (
             describe_ontology(ontology)
             + (f"\n\nReference time of this text: {reference_time}" if reference_time else "")
+            + (
+                "\n\nENTITIES ALREADY IN THE GRAPH (reuse these exact names when the text refers "
+                "to the same thing, e.g. a short form or @handle):\n" + "; ".join(known_entities)
+                if known_entities else ""
+            )
             + (
                 "\n\nPRECEDING CONTEXT (only for resolving names and references in TEXT; "
                 "do not extract facts that appear only here):\n" + context.strip()

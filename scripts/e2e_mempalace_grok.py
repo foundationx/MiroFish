@@ -157,15 +157,20 @@ def main() -> None:
         status = d.get("runner_status")
         if status in ("completed", "stopped"):
             return True
-        # The runner stays "running" (waiting for interview commands) after the
-        # rounds finish; treat both platforms completing as done, like the UI.
-        wanted = {"parallel": ("twitter_completed", "reddit_completed"),
-                  "twitter": ("twitter_completed",), "reddit": ("reddit_completed",)}[args.platform]
-        if all(d.get(k) for k in wanted):
-            return True
         if status == "failed":
             return False
+        # After the rounds finish the runner goes to "stopping" while graph-memory
+        # ingestion drains, then "completed". If it instead idles in "running"
+        # (interview mode) with every platform done for >90s, stop it ourselves.
+        wanted = {"parallel": ("twitter_completed", "reddit_completed"),
+                  "twitter": ("twitter_completed",), "reddit": ("reddit_completed",)}[args.platform]
+        if all(d.get(k) for k in wanted) and status == "running":
+            idle_since.setdefault("t", time.time())
+            if time.time() - idle_since["t"] > 90:
+                return True
         return None
+
+    idle_since: dict = {}
 
     run = poll("simulation", lambda: call(base, "GET", f"/api/simulation/{sim_id}/run-status"), sim_done, interval=10)
     summary["actions"] = run.get("total_actions_count")

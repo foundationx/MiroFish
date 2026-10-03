@@ -57,6 +57,10 @@ _SAFE_GRAPH_ID = re.compile(r"^[A-Za-z0-9_.\-]{1,128}$")
 CONTEXT_CHARS = 800
 
 
+def _alias_key(name: str) -> str:
+    return entity_id_for((name or "").strip().lstrip("@").strip())
+
+
 def entity_id_for(name: str) -> str:
     """Same id normalisation as ``mempalace.knowledge_graph.KnowledgeGraph``."""
 
@@ -265,8 +269,11 @@ class GraphStore:
                 (episode_uuid,),
             ).fetchone()
             context = (prev["content"] or "")[-CONTEXT_CHARS:] if prev else ""
+        known = self.known_entity_names()
         try:
-            extraction = self.extractor.extract(content, ontology, reference_time=created_at, context=context)
+            extraction = self.extractor.extract(
+                content, ontology, reference_time=created_at, context=context, known_entities=known,
+            )
         except Exception as error:
             with self.lock:
                 self.db.execute("UPDATE episodes SET processed=1, error=? WHERE uuid=?", (f"{type(error).__name__}: {error}"[:500], episode_uuid))
@@ -279,8 +286,47 @@ class GraphStore:
             self.db.commit()
         return extraction
 
+    def _resolve_names(self, extraction: Extraction) -> None:
+        """Map aliases onto existing nodes ("@Ben" -> "Ben", "Lumora" -> "Lumora Labs").
+
+        Exact matches (ignoring case, spaces and a leading "@") always merge. A
+        whole-word prefix/extension of one existing name merges when the types agree,
+        or when the new entity is an untyped stub created from a fact endpoint.
+        """
+        rows = self.db.execute("SELECT name, type FROM nodes").fetchall()
+        existing = [(r["name"], r["type"] or "Entity", _alias_key(r["name"])) for r in rows]
+        mapping: Dict[str, str] = {}
+        for entity in extraction.entities:
+            key = _alias_key(entity.name)
+            if not key:
+                continue
+            exact = [name for name, _t, k in existing if k == key]
+            if exact:
+                canonical = exact[0]
+            else:
+                stub = entity.type == "Entity" and not entity.summary
+                cands = [
+                    name for name, etype, k in existing
+                    if (k.startswith(key + "_") or key.startswith(k + "_"))
+                    and (etype == entity.type or stub)
+                ]
+                canonical = cands[0] if len(cands) == 1 else None
+            if canonical and canonical != entity.name:
+                mapping[entity.name] = canonical
+                entity.name = canonical
+        for fact in extraction.facts:
+            fact.source = mapping.get(fact.source, fact.source)
+            fact.target = mapping.get(fact.target, fact.target)
+        extraction.facts = [f for f in extraction.facts if entity_id_for(f.source) != entity_id_for(f.target)]
+
+    def known_entity_names(self, limit: int = 80) -> List[str]:
+        with self.lock:
+            rows = self.db.execute("SELECT name, type FROM nodes ORDER BY seq LIMIT ?", (limit,)).fetchall()
+        return [f"{r['name']} ({r['type'] or 'Entity'})" for r in rows]
+
     def _apply_extraction(self, extraction: Extraction, episode_uuid: str) -> None:
         kg = self.kg
+        self._resolve_names(extraction)
         touched_nodes: Dict[str, None] = {}
         for entity in extraction.entities:
             entity_id = entity_id_for(entity.name)
