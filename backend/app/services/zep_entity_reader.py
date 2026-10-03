@@ -5,12 +5,12 @@ Zep实体读取与过滤服务
 
 from typing import Dict, Any, List, Optional, Set, Callable, TypeVar
 from dataclasses import dataclass, field
-from zep_cloud import NotFoundError
+from ..graph_memory import NotFoundError, get_graph_memory_client, is_mempalace_backend
 
 from ..config import Config
 from ..utils.logger import get_logger
 from ..utils.zep_paging import fetch_all_nodes, fetch_all_edges
-from ..utils.zep import call_zep_read_with_retry, get_zep_client
+from ..utils.zep import call_zep_read_with_retry
 
 logger = get_logger('mirofish.zep_entity_reader')
 
@@ -79,10 +79,10 @@ class ZepEntityReader:
     
     def __init__(self, api_key: Optional[str] = None):
         self.api_key = api_key or Config.ZEP_API_KEY
-        if not self.api_key:
+        if not self.api_key and not is_mempalace_backend():
             raise ValueError("ZEP_API_KEY 未配置")
-        
-        self.client = get_zep_client(self.api_key)
+
+        self.client = get_graph_memory_client(self.api_key)
     
     def _call_with_retry(
         self, 

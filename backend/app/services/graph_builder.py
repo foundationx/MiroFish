@@ -10,7 +10,9 @@ import threading
 from typing import Dict, Any, List, Optional, Callable
 from dataclasses import dataclass
 
-from zep_cloud import BatchAddItem, EntityEdgeSourceTarget, NotFoundError
+from zep_cloud import BatchAddItem, EntityEdgeSourceTarget
+
+from ..graph_memory import NotFoundError, get_graph_memory_client, is_mempalace_backend
 
 from ..config import Config
 from ..models.task import TaskManager, TaskStatus
@@ -24,7 +26,6 @@ from ..utils.ontology import (
 from ..utils.zep import (
     ZEP_INGESTION_WAIT_TIMEOUT_SECONDS,
     call_zep_read_with_retry,
-    get_zep_client,
     is_retryable_zep_error,
 )
 from .text_processor import TextProcessor
@@ -66,10 +67,11 @@ class GraphBuilderService:
     
     def __init__(self, api_key: Optional[str] = None):
         self.api_key = api_key or Config.ZEP_API_KEY
-        if not self.api_key:
+        if not self.api_key and not is_mempalace_backend():
             raise ValueError("ZEP_API_KEY 未配置")
-        
-        self.client = get_zep_client(self.api_key)
+
+        # Zep Cloud or local MemPalace, selected by GRAPH_MEMORY_BACKEND.
+        self.client = get_graph_memory_client(self.api_key)
         self.task_manager = TaskManager()
     
     def build_graph_async(

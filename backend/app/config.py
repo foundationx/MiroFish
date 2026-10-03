@@ -31,6 +31,8 @@ class Config:
     
     # Zep配置
     ZEP_API_KEY = os.environ.get('ZEP_API_KEY')
+    # Graph memory backend: 'zep' (default, Zep Cloud) or 'mempalace' (local)
+    GRAPH_MEMORY_BACKEND = os.environ.get('GRAPH_MEMORY_BACKEND', 'zep')
     
     # 文件上传配置
     MAX_CONTENT_LENGTH = 50 * 1024 * 1024  # 50MB
@@ -66,10 +68,10 @@ class Config:
         errors: list[str] = []
         if not cls.LLM_API_KEY:
             errors.append("LLM_API_KEY 未配置")
-        if not cls.ZEP_API_KEY:
-            errors.append("ZEP_API_KEY 未配置")
-        if os.environ.get("ZEP_API_URL"):
-            errors.append("ZEP_API_URL 不受支持；MiroFish 仅连接 Zep Cloud")
+        # Graph memory: Zep Cloud (default) needs ZEP_API_KEY; the local
+        # MemPalace backend (GRAPH_MEMORY_BACKEND=mempalace) needs no key.
+        from .graph_memory import graph_memory_config_errors
+        errors.extend(graph_memory_config_errors())
         if cls.DEBUG:
             import warnings
             warnings.warn("Flask DEBUG mode is enabled. Do not use in production.", RuntimeWarning)

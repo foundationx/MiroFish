@@ -16,8 +16,8 @@ from ..utils.locale import get_locale, set_locale
 from ..utils.zep import (
     ZEP_INGESTION_WAIT_TIMEOUT_SECONDS,
     call_zep_read_with_retry,
-    get_zep_client,
 )
+from ..graph_memory import get_graph_memory_client, is_mempalace_backend
 
 logger = get_logger('mirofish.zep_graph_memory_updater')
 
@@ -257,10 +257,10 @@ class ZepGraphMemoryUpdater:
         self.simulation_id = simulation_id or "unknown"
         self.api_key = api_key or Config.ZEP_API_KEY
         
-        if not self.api_key:
+        if not self.api_key and not is_mempalace_backend():
             raise ValueError("ZEP_API_KEY未配置")
-        
-        self.client = get_zep_client(self.api_key)
+
+        self.client = get_graph_memory_client(self.api_key)
         
         # 活动队列
         self._activity_queue: Queue = Queue()

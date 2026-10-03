@@ -12,7 +12,7 @@ import time
 import json
 from typing import Dict, Any, List, Optional
 from dataclasses import dataclass, field
-from zep_cloud import NotFoundError
+from ..graph_memory import NotFoundError, get_graph_memory_client, is_mempalace_backend
 
 from ..config import Config
 from ..utils.logger import get_logger
@@ -21,7 +21,6 @@ from ..utils.locale import get_locale, t
 from ..utils.zep_paging import fetch_all_nodes, fetch_all_edges
 from ..utils.zep import (
     call_zep_read_with_retry,
-    get_zep_client,
     normalize_zep_search_limit,
     normalize_zep_search_query,
 )
@@ -429,10 +428,10 @@ class ZepToolsService:
     
     def __init__(self, api_key: Optional[str] = None, llm_client: Optional[LLMClient] = None):
         self.api_key = api_key or Config.ZEP_API_KEY
-        if not self.api_key:
+        if not self.api_key and not is_mempalace_backend():
             raise ValueError("ZEP_API_KEY 未配置")
-        
-        self.client = get_zep_client(self.api_key)
+
+        self.client = get_graph_memory_client(self.api_key)
         # LLM客户端用于InsightForge生成子问题
         self._llm_client = llm_client
         logger.info(t("console.zepToolsInitialized"))
