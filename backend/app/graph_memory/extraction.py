@@ -37,7 +37,10 @@ Rules:
 - Every fact's source and target must also appear in "entities".
 - Only include attributes listed for that entity type.
 - Do not invent facts that are not supported by the text. Prefer specific named people, organisations, products and groups.
-- Keep entity names short and canonical (e.g. "Acme Corp", not "the company Acme Corp").
+- Every named person is a separate entity. Never fold a person into an organisation's attributes (e.g. a founder or CEO gets their own entity plus a relation to the organisation).
+- Named products, events, topics or places that are the object of a relation are entities too; give them type "Entity" if no allowed type fits.
+- Extract every relationship the text states or clearly implies (employment, founding, criticism, partnership, investment, reviews, announcements). Most entities should take part in at least one fact. Use "RELATED_TO" rather than dropping a relationship.
+- Keep entity names short and canonical, and use the same full name every time (e.g. "Acme Corp", not "the company Acme Corp" or "Acme").
 """
 
 
@@ -200,6 +203,7 @@ class LLMFactExtractor:
         ontology: Dict[str, Any] | None,
         *,
         reference_time: Optional[str] = None,
+        context: str = "",
     ) -> Extraction:
         text = (text or "").strip()
         if not text:
@@ -207,6 +211,11 @@ class LLMFactExtractor:
         user = (
             describe_ontology(ontology)
             + (f"\n\nReference time of this text: {reference_time}" if reference_time else "")
+            + (
+                "\n\nPRECEDING CONTEXT (only for resolving names and references in TEXT; "
+                "do not extract facts that appear only here):\n" + context.strip()
+                if context and context.strip() else ""
+            )
             + "\n\nTEXT:\n"
             + text[:MAX_EPISODE_CHARS]
         )

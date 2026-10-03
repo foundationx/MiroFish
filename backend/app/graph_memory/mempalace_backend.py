@@ -54,6 +54,9 @@ EPISODE_MARK = "__ep__"
 _SAFE_GRAPH_ID = re.compile(r"^[A-Za-z0-9_.\-]{1,128}$")
 
 
+CONTEXT_CHARS = 800
+
+
 def entity_id_for(name: str) -> str:
     """Same id normalisation as ``mempalace.knowledge_graph.KnowledgeGraph``."""
 
@@ -254,8 +257,16 @@ class GraphStore:
             content = row["content"] or ""
             created_at = row["created_at"]
             ontology = self.meta().get("ontology") or {}
+            # The tail of the previously recorded episode helps resolve references
+            # ("the kettle", "its founder") across chunk boundaries.
+            prev = self.db.execute(
+                "SELECT content FROM episodes WHERE rowid < (SELECT rowid FROM episodes WHERE uuid=?) "
+                "ORDER BY rowid DESC LIMIT 1",
+                (episode_uuid,),
+            ).fetchone()
+            context = (prev["content"] or "")[-CONTEXT_CHARS:] if prev else ""
         try:
-            extraction = self.extractor.extract(content, ontology, reference_time=created_at)
+            extraction = self.extractor.extract(content, ontology, reference_time=created_at, context=context)
         except Exception as error:
             with self.lock:
                 self.db.execute("UPDATE episodes SET processed=1, error=? WHERE uuid=?", (f"{type(error).__name__}: {error}"[:500], episode_uuid))

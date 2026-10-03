@@ -19,6 +19,7 @@ import urllib.request
 import uuid
 from pathlib import Path
 
+LANG = "en"  # MiroFish defaults to Chinese output when no Accept-Language is sent
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_SEED = ROOT / "examples/mempalace_grok/sample_seed_product_launch.md"
 REQUIREMENT = (
@@ -30,7 +31,7 @@ REQUIREMENT = (
 
 def call(base: str, method: str, path: str, payload=None, *, files=None, form=None, timeout=600, soft=False):
     url = base.rstrip("/") + path
-    headers = {}
+    headers = {"Accept-Language": LANG}
     body = None
     if files is not None:
         boundary = uuid.uuid4().hex
@@ -98,7 +99,10 @@ def main() -> None:
     ap.add_argument("--out", type=Path, default=ROOT / "backend/uploads/e2e_runs")
     ap.add_argument("--stop-after", choices=["graph", "prepare"], default=None,
                     help="stop early (used for the mocked-LLM smoke test)")
+    ap.add_argument("--lang", default="en", choices=["en", "zh"], help="output language (Accept-Language)")
     args = ap.parse_args()
+    global LANG
+    LANG = args.lang
     base = args.base
     t0 = time.time()
     summary: dict = {"seed": str(args.seed), "rounds": args.rounds}
