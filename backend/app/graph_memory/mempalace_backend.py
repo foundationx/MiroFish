@@ -245,15 +245,17 @@ class GraphStore:
     def ingest_episode(self, episode_uuid: str) -> Extraction:
         """Extract facts from a recorded episode and write them to MemPalace."""
 
-        row = self.db.execute("SELECT * FROM episodes WHERE uuid=?", (episode_uuid,)).fetchone()
-        if row is None:
-            raise not_found(f"Episode not found: {episode_uuid}")
-        if row["processed"]:
-            return Extraction()
-        content = row["content"] or ""
-        ontology = self.meta().get("ontology") or {}
+        with self.lock:
+            row = self.db.execute("SELECT * FROM episodes WHERE uuid=?", (episode_uuid,)).fetchone()
+            if row is None:
+                raise not_found(f"Episode not found: {episode_uuid}")
+            if row["processed"]:
+                return Extraction()
+            content = row["content"] or ""
+            created_at = row["created_at"]
+            ontology = self.meta().get("ontology") or {}
         try:
-            extraction = self.extractor.extract(content, ontology, reference_time=row["created_at"])
+            extraction = self.extractor.extract(content, ontology, reference_time=created_at)
         except Exception as error:
             with self.lock:
                 self.db.execute("UPDATE episodes SET processed=1, error=? WHERE uuid=?", (f"{type(error).__name__}: {error}"[:500], episode_uuid))
@@ -350,11 +352,13 @@ class GraphStore:
         )
 
     def list_nodes(self) -> List[SimpleNamespace]:
-        rows = self.db.execute("SELECT * FROM nodes ORDER BY seq").fetchall()
+        with self.lock:
+            rows = self.db.execute("SELECT * FROM nodes ORDER BY seq").fetchall()
         return [self._node_obj(r) for r in rows]
 
     def get_node(self, entity_id: str) -> SimpleNamespace:
-        row = self.db.execute("SELECT * FROM nodes WHERE entity_id=?", (entity_id,)).fetchone()
+        with self.lock:
+            row = self.db.execute("SELECT * FROM nodes WHERE entity_id=?", (entity_id,)).fetchone()
         if row is None:
             raise not_found(f"Node not found: {self.node_uuid(entity_id)}")
         return self._node_obj(row)
@@ -371,9 +375,11 @@ class GraphStore:
         return rows
 
     def list_edges(self, as_of: Optional[str] = None) -> List[SimpleNamespace]:
-        meta = {r["triple_id"]: r for r in self.db.execute("SELECT * FROM edges").fetchall()}
+        with self.lock:
+            meta = {r["triple_id"]: r for r in self.db.execute("SELECT * FROM edges").fetchall()}
+            triples = self._triples()
         out = []
-        for triple in self._triples():
+        for triple in triples:
             info = meta.get(triple["id"])
             if info is None:
                 continue  # triples written outside MiroFish are ignored
@@ -401,7 +407,8 @@ class GraphStore:
         return out
 
     def get_episode(self, episode_uuid: str) -> SimpleNamespace:
-        row = self.db.execute("SELECT * FROM episodes WHERE uuid=?", (episode_uuid,)).fetchone()
+        with self.lock:
+            row = self.db.execute("SELECT * FROM episodes WHERE uuid=?", (episode_uuid,)).fetchone()
         if row is None:
             raise not_found(f"Episode not found: {episode_uuid}")
         return SimpleNamespace(
@@ -412,7 +419,8 @@ class GraphStore:
     def query_entity(self, name: str, as_of: Optional[str] = None, direction: str = "both") -> list:
         """MemPalace-native lookup (exposed for callers that want it)."""
 
-        return self.kg.query_entity(name, as_of=as_of, direction=direction)
+        with self.lock:
+            return self.kg.query_entity(name, as_of=as_of, direction=direction)
 
     def search(self, query: str, limit: int, scope: str, as_of: Optional[str] = None) -> SimpleNamespace:
         from mempalace.searcher import search_memories
