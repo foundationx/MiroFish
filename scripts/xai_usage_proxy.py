@@ -39,6 +39,8 @@ def cost(model, usage):
     reasoning = (usage.get("completion_tokens_details") or {}).get("reasoning_tokens") or 0
     # xAI reports reasoning tokens separately from completion_tokens; both bill as output.
     usd = ((prompt - cached) * p_in + cached * p_cached + (completion + reasoning) * p_out) / 1e6
+    if usage.get("cost_in_usd_ticks"):  # xAI's billed cost; 1 tick = 1e-10 USD
+        usd = usage["cost_in_usd_ticks"] / 1e10
     return prompt, cached, completion, reasoning, usd
 
 

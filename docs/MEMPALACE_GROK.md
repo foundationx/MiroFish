@@ -86,6 +86,7 @@ a stub). It only checks the wiring.
 | `GRAPH_MEMORY_BACKEND` | `zep` (default) or `mempalace` | with `mempalace`, `ZEP_API_KEY` is not required |
 | `MEMPALACE_DATA_DIR` | path | default `backend/uploads/mempalace` |
 | `MEMPALACE_EXTRACT_WORKERS` | int, default 4 | parallel extraction calls during batch processing |
+| `MEMPALACE_EXTRACT_MODEL` | e.g. `grok-4.20-0309-non-reasoning` | model used only for graph extraction (default `LLM_MODEL_NAME`) |
 | `LLM_BASE_URL` | `https://api.x.ai/v1` | |
 | `LLM_MODEL_NAME` | `grok-4.3` | ontology, extraction, personas, config, report agent |
 | `LLM_BOOST_BASE_URL` / `LLM_BOOST_MODEL_NAME` | `https://api.x.ai/v1` / `grok-4.20-0309-non-reasoning` | used by the OASIS simulation agents when the boost key is also set |
@@ -94,17 +95,26 @@ a stub). It only checks the wiring.
 `config.py` loads `.env` with `override=True`, so any key written in `.env` would beat the
 environment. Leave both keys out of the file.
 
-**Model choice.** At the time of writing, xAI's docs list `grok-4.7` as the flagship
-($2 in / $6 out per 1M tokens) and `grok-4.3` / `grok-4.20-0309-*` at $1.25 / $2.50,
-with tool calling and structured outputs on the Grok 4 family. MiroFish makes many calls,
-so the cheaper tier is the default. Swap in `grok-4.7` for better reports. These model
-IDs come from the docs and could not be checked against `/v1/models`, because the account
-returned 403 (no credits) during development.
+**Model choice.** `grok-4.3` (reasoning, $1.25 in / $0.20 cached / $2.50 out per 1M
+tokens) is the main model. `grok-4.20-0309-non-reasoning` (same price, no reasoning
+tokens) drives the OASIS agents (boost) and graph extraction (`MEMPALACE_EXTRACT_MODEL`).
+Both appear in `/v1/models` (checked 2026-10-03), and both passed a tool-call and
+`json_object` probe. Swap in `grok-4.7` ($2 / $6) for better reports. Note that grok-4.3
+reasoning tokens bill as output and often outnumber the visible completion.
 
-**Rough cost** for the SAMPLE run (12 rounds, ~15–25 agents, both platforms): about
-1.5–2.5M input tokens and 0.1–0.2M output tokens. That's roughly **$2–6** at
-grok-4.3 / 4.20 prices, less with cached input. The OASIS agent turns are the bulk of it.
-This is an estimate, not a measurement.
+**Measured cost (2026-10-03).** Full SAMPLE run (12 rounds, 13 agents, both platforms,
+graph-memory updates on, report): 98 API calls, ~297k prompt tokens (~133k cached),
+~35k completion + ~32k reasoning tokens, **$0.40**, 7.3 minutes. That's the sum of xAI's
+own `usage.cost_in_usd_ticks` (1 tick = 1e-10 USD), which matched the price-table
+estimate. An earlier run with
+grok-4.3 doing extraction cost ≈ $0.47, and graph ingestion after the simulation took ~4
+minutes instead of ~11 s.
+
+To measure your own runs, put `scripts/xai_usage_proxy.py` in front of xAI:
+`python scripts/xai_usage_proxy.py --budget-usd 10 --log backend/logs/xai_usage.jsonl`,
+then set both base URLs in `.env` to `http://127.0.0.1:5097/v1`. It logs each response's
+`usage` with a cost estimate (and xAI's `cost_in_usd_ticks`), exposes `GET /__usage`, and returns 429 once the estimated
+spend passes the budget.
 
 ## Limitations / differences from Zep
 
@@ -112,9 +122,13 @@ This is an estimate, not a measurement.
   similarity plus a KG name-match boost.
 - **Extraction costs LLM calls.** It takes one call per chunk at build time and one per
   simulation-activity batch when graph-memory updates are on. Zep did this server-side.
-- **Weaker entity resolution.** Entities merge by normalized name, so "Dana Okafor" and
-  "Okafor" end up as two nodes. There's no LLM dedup and no summary rewriting beyond
-  appending.
+- **Simple entity resolution.** The extractor sees the names already in the graph, and
+  a deterministic pass merges `@handle`/case variants and whole-word short forms of the
+  same type ("Lumora" ↔ "Lumora Labs"). The first name seen becomes canonical, so the
+  short form can win. There's no LLM dedup and no summary rewriting beyond appending.
+- **Chunk context.** Each chunk is extracted with the last 800 characters of the
+  previous episode as context only. MiroFish's default 500-character chunks are small,
+  and a reference that crosses a boundary can still be misattributed.
 - **`expired_at` is always `None`.** `valid_at`/`invalid_at` come only from dates stated
   in the text, and nothing auto-invalidates contradicted facts.
 - **`graph.add` and batch items report "processed" even when extraction failed** (the
@@ -125,8 +139,13 @@ This is an estimate, not a measurement.
   sharing one `MEMPALACE_DATA_DIR`.
 - **Tests use a mock LLM** (`backend/tests/test_mempalace_graph_memory.py`). Extraction
   quality with real Grok output hasn't been measured yet.
-- **The live Grok E2E run hasn't been done.** The xAI team behind the key returned
-  `403 permission-denied` (credits exhausted / spending limit) during development. Run
-  `scripts/e2e_mempalace_grok.py` once credits are available.
+- **Live Grok E2E passed (2026-10-03):** 16 nodes / 27 edges at build (16 / 52
+  after the simulation's memory updates), 13 personas, 64 agent actions, 4-section
+  report. Agents act only in rounds 0 and 9–12, because MiroFish's generated activity
+  schedule leaves the early simulated hours quiet (upstream behavior). The report agent
+  dramatizes thin evidence: one downvote becomes "Competitive Sabotage and Platform
+  Manipulation".
+- **Output language.** MiroFish defaults to Chinese unless the request carries
+  `Accept-Language: en`. The E2E script sends `en` by default (`--lang zh` for Chinese).
 - **Licensing.** MiroFish is AGPL-3.0, so a hosted deployment of this fork must offer
   its source. MemPalace is MIT.
