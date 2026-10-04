@@ -71,6 +71,15 @@ graph-memory updates) → stop → report. Output goes to
 `backend/uploads/e2e_runs/<sim_id>_report.md` and `<sim_id>_summary.json`. Pass
 `--stop-after graph|prepare` for partial runs.
 
+Other options: `--seed a.md b.md ...` uploads several seed files together;
+`--question-file q.md` uses the file's `## Main question` section as the prediction
+question; `--keep-env-for-report` generates the report while the OASIS env is still
+alive, so the report agent's `interview_agents` tool works (upstream stops the env
+first, so interviews fail with "env not running"). That last option uses a new opt-in
+`keep_env_alive: true` flag on `POST /api/report/generate`. The flag drains graph-memory
+ingestion synchronously in that request, then leaves the env running until the caller
+stops it.
+
 ### Offline smoke test (no API spend)
 
 `scripts/mock_openai_server.py` is a tiny OpenAI-compatible mock. Point
