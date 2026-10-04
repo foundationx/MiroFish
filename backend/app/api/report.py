@@ -27,6 +27,21 @@ from ..utils.zep_lifecycle import (
 logger = get_logger('mirofish.api.report')
 
 
+def _rounds_done_env_alive(simulation_id: str, run_state) -> bool:
+    """True when every platform finished its rounds and the OASIS env still answers IPC."""
+
+    if run_state is None or run_state.runner_status != RunnerStatus.RUNNING:
+        return False
+    if run_state.twitter_running or run_state.reddit_running:
+        return False
+    if not (run_state.twitter_completed or run_state.reddit_completed):
+        return False
+    try:
+        return SimulationRunner.check_env_alive(simulation_id)
+    except Exception:
+        return False
+
+
 # ============== 报告生成接口 ==============
 
 @report_bp.route('/generate', methods=['POST'])
@@ -65,6 +80,12 @@ def generate_report():
             }), 400
 
         force_regenerate = data.get('force_regenerate', False)
+        # Opt-in: generate the report while the simulation environment is still
+        # alive (rounds finished, env idling in interview mode) so the report
+        # agent's interview_agents tool can reach the agents. Graph-memory
+        # ingestion is drained first; the env is left running for the caller
+        # to stop afterwards.
+        keep_env_alive = data.get('keep_env_alive', False) is True
         if not isinstance(force_regenerate, bool):
             return jsonify({
                 "success": False,
@@ -82,6 +103,9 @@ def generate_report():
             }), 404
 
         run_state = SimulationRunner.get_run_state(simulation_id)
+        live_env = keep_env_alive and _rounds_done_env_alive(simulation_id, run_state)
+        if live_env and ZepGraphMemoryManager.get_updater(simulation_id) is not None:
+            ZepGraphMemoryManager.stop_updater(simulation_id)  # flush + wait for pending episodes
         updater = ZepGraphMemoryManager.get_updater(simulation_id)
         active_statuses = {
             RunnerStatus.STARTING,
@@ -91,6 +115,7 @@ def generate_report():
         }
         if updater is not None or (
             run_state is not None and run_state.runner_status in active_statuses
+            and not live_env
         ):
             return jsonify({
                 "success": False,
@@ -106,7 +131,7 @@ def generate_report():
         }
         if (
             run_state is None
-            or run_state.runner_status not in successful_terminal_statuses
+            or (run_state.runner_status not in successful_terminal_statuses and not live_env)
         ):
             return jsonify({
                 "success": False,
@@ -183,9 +208,12 @@ def generate_report():
                     "success": False,
                     "error": "The project graph changed while reporting was starting",
                 }), 409
+            if live_env:
+                live_env = _rounds_done_env_alive(simulation_id, refreshed_run_state)
             if refreshed_updater is not None or (
                 refreshed_run_state is not None
                 and refreshed_run_state.runner_status in active_statuses
+                and not live_env
             ):
                 return jsonify({
                     "success": False,
@@ -197,8 +225,11 @@ def generate_report():
                 }), 409
             if (
                 refreshed_run_state is None
-                or refreshed_run_state.runner_status
-                not in successful_terminal_statuses
+                or (
+                    refreshed_run_state.runner_status
+                    not in successful_terminal_statuses
+                    and not live_env
+                )
             ):
                 return jsonify({
                     "success": False,

@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 import time
 import urllib.request
@@ -38,7 +39,7 @@ def call(base: str, method: str, path: str, payload=None, *, files=None, form=No
         parts = []
         for key, value in (form or {}).items():
             parts.append(f'--{boundary}\r\nContent-Disposition: form-data; name="{key}"\r\n\r\n{value}\r\n'.encode())
-        for key, (name, data, ctype) in files.items():
+        for key, (name, data, ctype) in files:
             parts.append(
                 f'--{boundary}\r\nContent-Disposition: form-data; name="{key}"; filename="{name}"\r\n'
                 f"Content-Type: {ctype}\r\n\r\n".encode() + data + b"\r\n"
@@ -60,6 +61,13 @@ def call(base: str, method: str, path: str, payload=None, *, files=None, form=No
             return {"_error": out}
         raise SystemExit(f"{method} {path} failed: {json.dumps(out, ensure_ascii=False)[:2000]}")
     return out.get("data") or {}
+
+
+def main_question(text: str) -> str:
+    """Return the '## Main question' section of a question file, or the whole text."""
+
+    m = re.search(r"^##\s*Main question\s*\n(.*?)(?=^##\s|\Z)", text, flags=re.M | re.S)
+    return (m.group(1) if m else text).strip()
 
 
 def poll(label: str, fn, done, *, interval=5, timeout=7200):
@@ -93,7 +101,16 @@ def task_done(data):
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--base", default="http://127.0.0.1:5001")
-    ap.add_argument("--seed", type=Path, default=DEFAULT_SEED)
+    ap.add_argument("--seed", type=Path, nargs="+", default=[DEFAULT_SEED],
+                    help="one or more seed documents (uploaded together)")
+    ap.add_argument("--question-file", type=Path, default=None,
+                    help="markdown file holding the prediction question; uses its '## Main question' "
+                         "section if present, else the whole file")
+    ap.add_argument("--requirement", default=None, help="prediction question / simulation requirement text")
+    ap.add_argument("--project-name", default="SAMPLE Halo Kettle")
+    ap.add_argument("--keep-env-for-report", action="store_true",
+                    help="generate the report while the simulation env is still alive so agent "
+                         "interviews work; the env is stopped after the report")
     ap.add_argument("--rounds", type=int, default=12)
     ap.add_argument("--platform", default="parallel", choices=["parallel", "twitter", "reddit"])
     ap.add_argument("--out", type=Path, default=ROOT / "backend/uploads/e2e_runs")
@@ -105,12 +122,16 @@ def main() -> None:
     LANG = args.lang
     base = args.base
     t0 = time.time()
-    summary: dict = {"seed": str(args.seed), "rounds": args.rounds}
+    requirement = args.requirement or REQUIREMENT
+    if args.question_file:
+        requirement = main_question(args.question_file.read_text(encoding="utf-8"))
+    summary: dict = {"seed": [str(p) for p in args.seed], "rounds": args.rounds, "requirement": requirement}
+    print(f"requirement: {requirement[:300]}{'...' if len(requirement) > 300 else ''}")
 
     print("1/6 ontology/generate")
     data = call(base, "POST", "/api/graph/ontology/generate",
-                files={"files": (args.seed.name, args.seed.read_bytes(), "text/markdown")},
-                form={"simulation_requirement": REQUIREMENT, "project_name": "SAMPLE Halo Kettle"})
+                files=[("files", (p.name, p.read_bytes(), "text/markdown")) for p in args.seed],
+                form={"simulation_requirement": requirement, "project_name": args.project_name})
     project_id = summary["project_id"] = data["project_id"]
     print(f"  project {project_id}")
 
@@ -132,6 +153,7 @@ def main() -> None:
     print("3/6 simulation/create")
     data = call(base, "POST", "/api/simulation/create", {"project_id": project_id, "graph_id": graph_id})
     sim_id = summary["simulation_id"] = data["simulation_id"]
+    print(f"  simulation {sim_id}")
 
     print("4/6 simulation/prepare (personas + config)")
     data = call(base, "POST", "/api/simulation/prepare", {"simulation_id": sim_id, "parallel_profile_count": 4})
@@ -165,6 +187,8 @@ def main() -> None:
         wanted = {"parallel": ("twitter_completed", "reddit_completed"),
                   "twitter": ("twitter_completed",), "reddit": ("reddit_completed",)}[args.platform]
         if all(d.get(k) for k in wanted) and status == "running":
+            if args.keep_env_for_report:
+                return True
             idle_since.setdefault("t", time.time())
             if time.time() - idle_since["t"] > 90:
                 return True
@@ -176,25 +200,41 @@ def main() -> None:
     summary["actions"] = run.get("total_actions_count")
     summary["rounds_done"] = run.get("current_round")
 
-    # Stop the runner (it idles in interview mode) so graph-memory ingestion
-    # can drain; report generation waits for a terminal run status.
-    call(base, "POST", "/api/simulation/stop", {"simulation_id": sim_id}, soft=True)
-
-    print("6/6 report/generate")
-    for _ in range(120):
-        data = call(base, "POST", "/api/report/generate", {"simulation_id": sim_id}, soft=True)
-        err = data.get("_error")
-        if not err:
-            break
-        if "still active" not in str(err.get("error", "")):
-            raise SystemExit(f"report/generate failed: {err}")
-        print("  waiting for graph-memory ingestion to drain...", flush=True)
-        time.sleep(10)
-    else:
-        raise SystemExit("report/generate: ingestion never drained")
+    data = {}
+    live = False
+    if args.keep_env_for_report and run.get("runner_status") == "running":
+        print("6/6 report/generate (env kept alive for interviews)")
+        data = call(base, "POST", "/api/report/generate",
+                    {"simulation_id": sim_id, "keep_env_alive": True}, soft=True, timeout=900)
+        if data.get("_error"):
+            print(f"  live-env report refused, falling back: {data['_error'].get('error')}")
+            data = {}
+        else:
+            live = True
+    summary["report_with_live_env"] = live
+    if not live:
+        # Stop the runner (it idles in interview mode) so graph-memory ingestion
+        # can drain; report generation waits for a terminal run status.
+        call(base, "POST", "/api/simulation/stop", {"simulation_id": sim_id}, soft=True, timeout=900)
+        print("6/6 report/generate")
+    if not live:
+        for _ in range(120):
+            data = call(base, "POST", "/api/report/generate", {"simulation_id": sim_id}, soft=True)
+            err = data.get("_error")
+            if not err:
+                break
+            if "still active" not in str(err.get("error", "")):
+                raise SystemExit(f"report/generate failed: {err}")
+            print("  waiting for graph-memory ingestion to drain...", flush=True)
+            time.sleep(10)
+        else:
+            raise SystemExit("report/generate: ingestion never drained")
     rep_task = data.get("task_id")
     poll("report", lambda: call(base, "POST", "/api/report/generate/status",
                                 {"task_id": rep_task, "simulation_id": sim_id}), task_done, interval=10)
+    if live:
+        print("  report done; stopping the simulation env")
+        call(base, "POST", "/api/simulation/stop", {"simulation_id": sim_id}, soft=True, timeout=900)
     report = call(base, "GET", f"/api/report/by-simulation/{sim_id}")
     report_id = summary["report_id"] = report.get("report_id")
     args.out.mkdir(parents=True, exist_ok=True)
